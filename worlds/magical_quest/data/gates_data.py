@@ -69,7 +69,7 @@ STORE_DOORS = [
     (R.treetops_1_2, R.treetops_store, ""),
     (R.dark_forest_2_2, R.dark_forest_store, "W"),          # After the Hollow Tree.
     (R.fire_grotto_3_3, R.fire_grotto_store, ""),           # Level entry already needs F | M.
-    (R.petes_peak_4_1, R.petes_peak_store, "M"),            # Needs to clim the mountain Mountain.
+    (R.petes_peak_4_1, R.petes_peak_store, "M"),            # Needs the Mountaineer Costume to climb the mountain.
     (R.petes_castle_6_1, R.petes_castle_store, ""),         # Underwater, but Normal Mickey can reach it.
 ]
 # Every Store region leads to the shared "General Store" region (the two Upgrade Locations), rule "".

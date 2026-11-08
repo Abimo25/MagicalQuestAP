@@ -16,8 +16,8 @@
 # - ("mini_boss", stage)     same, in the mini-boss Level (Stage, Level) of MINI_BOSS_LEVELS
 # - ("rematch", stage, lvl)  same, in Pete's Castle Levels 6-8 (REMATCH_LEVELS)
 # - ("costume_entry", stage) arriving at the Stage's first Level (COSTUME_ENTRY_LEVELS)
-# - ("store_heart", area)    $02BD 0 -> 1 inside that Store Area
-# - ("upgrade", wram)        the Upgrade flag ($02B5 / $02B6) goes 0 -> 1 inside a Store
+# - ("store", mask, area)    bit mask of AP RAM $7FEE17, the Store purchase latch (MQ_AP_Store.asm). "area" is the
+#                            only Store that sells it (the Big Hearts), or 0 for every Store (the Upgrades); Store Hints use it
 
 from typing import NamedTuple, Optional, Tuple
 
@@ -76,7 +76,7 @@ LOCATIONS = [
     _box(17, L.fire_grotto_3_2_box_d, R.fire_grotto_3_2, F, "F | (M & W)"),
     _box(18, L.fire_grotto_3_3_box_a, R.fire_grotto_3_3, F, "F"),        # Wizard can still open it through the patched Grey Blocks, but taking damage is unavoidable.
     _box(19, L.fire_grotto_3_3_box_b, R.fire_grotto_3_3, F, "W"),        # Underwater; players can grab a Gold Block from the Grey Block room and walk all the way back to open it, but taking damage is unavoidable.
-    _box(20, L.fire_grotto_3_3_box_c, R.fire_grotto_3_3, F, "F | M"),
+    _box(20, L.fire_grotto_3_3_box_c, R.fire_grotto_3_3, F),         # The AP Item drop must be caught in the air. The Firefighter can move blocks so it doesn't fall into the void.
     _box(21, L.pete_s_peak_4_1_box_a, R.petes_peak_4_1, P),              # ROM is patched to spawn a Red Block the player can jump on, so it's always available.
     _box(22, L.pete_s_peak_4_1_box_b, R.petes_peak_4_1, P, "M"),
     _box(23, L.pete_s_peak_4_2_box_a, R.petes_peak_4_2, P),
@@ -123,10 +123,14 @@ LOCATIONS = [
 
     # ---- Store purchases ------------------------------------------------------------------------------
     # The 300 Mickey Coins Item is needed for all of these, so the player isn't expected to grind for a Store Location.
-    LocationData(L.dark_forest_store_big_heart, 150, R.dark_forest_store, "COINS", K_STORE, D, ("store_heart", 46)),
-    LocationData(L.petes_castle_store_big_heart, 151, R.petes_castle_store, "COINS", K_STORE, C, ("store_heart", 47)),
-    LocationData(L.store_magic_upgrade, 152, R.general_store, "COINS & W", K_STORE, None, ("upgrade", 0x7E02B5)),
-    LocationData(L.store_water_upgrade, 153, R.general_store, "COINS & F", K_STORE, None, ("upgrade", 0x7E02B6)),
+    # Vanilla sells a Big Heart only in Dark Forest and Pete's Castle; patched so every Store has a unique Item to sell.
+    LocationData(L.dark_forest_store_big_heart, 150, R.dark_forest_store, "COINS", K_STORE, D, ("store", 0x01, 46)),
+    LocationData(L.petes_castle_store_big_heart, 151, R.petes_castle_store, "COINS", K_STORE, C, ("store", 0x02, 47)),
+    LocationData(L.treetops_store_big_heart, 154, R.treetops_store, "COINS", K_STORE, T, ("store", 0x10, 45)),
+    LocationData(L.fire_grotto_store_big_heart, 155, R.fire_grotto_store, "COINS", K_STORE, F, ("store", 0x20, 48)),
+    LocationData(L.pete_s_peak_store_big_heart, 156, R.petes_peak_store, "COINS", K_STORE, P, ("store", 0x40, 44)),
+    LocationData(L.store_magic_upgrade, 152, R.general_store, "COINS & W", K_STORE, None, ("store", 0x04, 0)),
+    LocationData(L.store_water_upgrade, 153, R.general_store, "COINS & F", K_STORE, None, ("store", 0x08, 0)),
 
     # ---- Beaver Secret and the Snowy Valley 5-2 speed runs (ROM latch $7FEE15) -----------------------------
     LocationData(L.treetops_beaver_secret, 160, R.treetops_1_3, "", K_BEAVER, T, ("odd", 0x01), secret=True), # Not really a Secret area in the game, but the Beaver 2-up is a unique thing.
@@ -140,6 +144,9 @@ EVENT_RULE = "W" # I think Emperor Pete may be also beatable with Firefighter, b
 
 LOCATION_BY_NAME = {loc.name: loc for loc in LOCATIONS}
 BOX_LOCATIONS = [loc for loc in LOCATIONS if loc.kind == K_BOX]
+# The 5-3 Skater: with the option "5-3 Skater Boss requires Firefighter or Wizard" off, the patch lowers its HP when neither Costume is owned.
+SKATER_LOCATIONS = (L.snowy_valley_cleared, L.snowy_valley_boss)
+
 EMBLEM_LOCATIONS = (L.treetops_boss, L.dark_forest_boss, L.fire_grotto_boss, L.pete_s_peak_boss, L.snowy_valley_boss)
 HARD_ONLY_LOCATIONS = tuple(loc.name for loc in LOCATIONS if loc.hard_only)
 
@@ -147,8 +154,7 @@ HARD_ONLY_LOCATIONS = tuple(loc.name for loc in LOCATIONS if loc.hard_only)
 # Open World: these five Map Fragments are in the start inventory; only the Pete's Castle Fragment stays in the pool.
 OPEN_WORLD_FRAGMENTS = (I.treetops_map_fragment, I.dark_forest_map_fragment, I.fire_grotto_map_fragment,
                         I.petes_peak_map_fragment, I.snowy_valley_map_fragment)
-# Linear and Vanilla Progression: clearing a Stage (its "cleared" Location, not the boss Location, which holds an Emblem)
-# unlocks the next Stage in the game's own order instead of giving a random AP Item.
+# Linear and Vanilla Progression: clearing a Stage (its "cleared" Location, not the boss Location, which holds an Emblem) unlocks the next Stage in the game's own order instead of giving a random AP Item.
 LINEAR_CLEAR_UNLOCKS = {
     L.treetops_cleared: I.dark_forest_map_fragment,
     L.dark_forest_cleared: I.fire_grotto_map_fragment,

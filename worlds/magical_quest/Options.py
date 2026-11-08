@@ -3,7 +3,7 @@
 # ===========
 from dataclasses import dataclass
 
-from Options import Choice, DefaultOnToggle, PerGameCommonOptions, Range, StartInventoryPool
+from Options import Choice, DefaultOnToggle, PerGameCommonOptions, Range, StartInventoryPool, Toggle
 
 from .Ram import (STAGE_TREETOPS, STAGE_DARK_FOREST, STAGE_FIRE_GROTTO, STAGE_PETES_PEAK, STAGE_SNOWY_VALLEY,
                   STAGE_PETES_CASTLE)
@@ -65,9 +65,26 @@ class HardOnlyBoxFiller(DefaultOnToggle):
 
 class StoreHints(DefaultOnToggle):
     """When you enter a Store, the client sends hints for what you would get from it: the two Upgrades in every Store,
-    and the two Big Hearts in their respective Stores. Everyone in the multiworld sees them, whichever game
-    the item belongs to. Turn this off if you would rather find out what the Store holds by buying it."""
+    and each Store's own Big Heart. Everyone in the multiworld sees them, whichever game
+    the item belongs to.
+    
+    Turn this off if you would rather find out what the Store holds by buying it."""
     display_name = "Store Hints"
+
+
+class ProgressiveCostumes(Toggle):
+    """Off: the Magic Upgrade and the Water Upgrade are their own AP Items, separate from the Wizard and Firefighter
+    Costumes.
+    
+    On: they become a second copy of a Progressive AP Item instead: the first "Progressive Wizard" you receive
+    is the Wizard Costume, the second its Magic Upgrade (the same for "Progressive Firefighter" and the Water
+    Upgrade)."""
+    display_name = "Progressive Costumes"
+
+
+class SkaterRequiresCostume(DefaultOnToggle):
+    """Turning this Off will make Logic expect you to beat it without any Costume, but its health is reduced if you don't own either Wizard or Firefighter."""
+    display_name = "5-3 Skater Boss requires Firefighter or Wizard"
 
 
 @dataclass
@@ -77,4 +94,6 @@ class MagicalQuestOptions(PerGameCommonOptions):
     starting_max_health: StartingMaxHealth
     hard_only_box_filler: HardOnlyBoxFiller
     store_hints: StoreHints
+    progressive_costumes: ProgressiveCostumes
+    skater_requires_costume: SkaterRequiresCostume
     start_inventory_from_pool: StartInventoryPool

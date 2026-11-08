@@ -95,6 +95,9 @@ class MagicalQuestWorld(World):
             self.locked_items.update(locations_data.LINEAR_CLEAR_UNLOCKS)
             if mode == GameMode.option_vanilla_progression:
                 self.locked_items.update(locations_data.VANILLA_COSTUME_UNLOCKS)
+        if self.options.progressive_costumes:
+            # The locked Wizard / Firefighter become the first copy of their progressive item
+            self.locked_items = {loc: items_data.PROGRESSIVE.get(item, item) for loc, item in self.locked_items.items()}
         for name in self.precollected_fragments:
             self.push_precollected(self.create_item(name))
 
@@ -134,13 +137,15 @@ class MagicalQuestWorld(World):
         # them against the patched ROM before it writes anything.
         return {
             "options": self.options.as_dict("game_mode", "starting_stage", "starting_max_health", "hard_only_box_filler",
-                                            "store_hints"),
+                                            "store_hints", "progressive_costumes", "skater_requires_costume"),
             "world_version": WORLD_VERSION,
             "game_mode": self.options.game_mode.value,
             "starting_stage": self.starting_stage_index,
             "starting_max_health": self.options.starting_max_health.value,
             "hard_only_box_filler": bool(self.options.hard_only_box_filler),
             "store_hints": bool(self.options.store_hints),
+            "progressive_costumes": bool(self.options.progressive_costumes),
+            "skater_requires_costume": bool(self.options.skater_requires_costume),
         }
 
 

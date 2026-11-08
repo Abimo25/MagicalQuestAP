@@ -3,17 +3,27 @@
 # ==============
 
 # - STATELESS INVARIANTS (re-evaluated at every poll from the item history alone, so if the player resets, does a savestate load or a
-#   reconnect, it repairs itself): Map Fragments ($7FEE00), Pete's Emblem count ($7FEE0D), Max Health, the two Upgrade
-#   flags, the Costume flags.
+#   reconnect, it repairs itself): Map Fragments ($7FEE00), Pete's Emblem count ($7FEE0D), the checked Store Locations
+#   ($7FEE18), Max Health, the two Upgrade flags, the Costume flags.
 # - ONE-SHOT EFFECTS (coins, refills, Small Heart, Mickey Doll, the Big Heart heal) are applied once, in order, driven by
 #   the received-item index in AP RAM ($7FEE02-$7FEE03). The index lives in the game's RAM on purpose: a New Game
 #   zeroes it and the history is replayed, a savestate load restores it together with the state it belongs to. It only
 #   advances while the safety gate is open, so no item is ever lost, only delayed.
+# - JINGLES: when the dispatcher passes Items that arrived after the client connected, it asks
+#   the ROM for one jingle per poll, the Costume jingle if a Costume is among them, otherwise the general one (Filler stays silent). The
+#   history already there at connect, and any replay (New Game, savestate load), stays silent.
+# - MESSAGES: the same new Items, plus Items this slot sends, become in-game messages
+#   ("RECEIVED X" / "FROM PLAYER"). They queue in the client; the next one is written to AP RAM when the ROM is idle.
+#   Nothing shows on the World Map (its text rows hold the Level Select); messages wait for a Level.
 # - The AP block is ignored until the ROM has marked it valid ($7FEE1C-$7FEE1F = "MQOK"): bank $7F is not cleared at boot,
 #   so before the title screen it is garbage and triggers a bunch of fake Location checks without this patch.
 # - The client never writes $02BD (the vanilla game uses this as a failsafe to stop the player from grabbing multiple Big Hearts).
-# - Locations are detected from the ROM latches ($7FEE10-$7FEE15) and from vanilla RAM (Area, Stage, Level, $1D8D,
-#   $02BD, the Upgrade flags).
+# - Locations are detected from the ROM latches ($7FEE10-$7FEE15, the Store latch $7FEE17) and from vanilla RAM (Area,
+#   Stage, Level, $1D8D).
+# - LEVELS PLAYED (the Level Select): the ROM records them in AP RAM ($7FEEE0-$7FEEE6), which a power cycle clears (the
+#   cartridge has no save RAM). The client keeps a copy in the server's data storage (key levels_key(), one integer,
+#   byte n = Stage Index n) and every poll writes RAM | server back to RAM and sends new bits with an "or" Set.
+#   Bits are only ever added.
 
 import logging
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple
@@ -21,7 +31,7 @@ from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 from NetUtils import ClientStatus
 from worlds.AutoSNIClient import SNIClient
 
-from . import Ram, RomData
+from . import Messages, Ram, RomData, TrackerData
 from .data import items_data
 from .data.items_data import STARTING_ID
 from .data.locations_data import LOCATIONS
@@ -44,14 +54,19 @@ GOAL_TEXT = "Saved Pluto!"
 ITEM_EFFECT: Dict[int, Tuple] = {STARTING_ID + item.id_offset: item.effect for item in items_data.ITEMS}
 ITEM_ID: Dict[str, int] = {item.name: STARTING_ID + item.id_offset for item in items_data.ITEMS}
 BIG_HEART_ID = ITEM_ID[I.big_heart]
+FILLER_IDS = {ITEM_ID[name] for name in items_data.FILLER_ITEMS}
 EMBLEM_ID = ITEM_ID[I.petes_emblem]
 MAX_HEALTH_CAP = 10
 
 COSTUME_FLAGS = (Ram.COSTUME_WIZARD, Ram.COSTUME_FIREFIGHTER, Ram.COSTUME_MOUNTAINEER)
 UPGRADE_ITEM = {Ram.WIZARD_UPGRADE: ITEM_ID[I.magic_upgrade], Ram.FIREFIGHTER_UPGRADE: ITEM_ID[I.water_upgrade]}
-# Stores that sell a Big Heart: Area -> (Stage Index, Level Index) of the Store Level.
-STORE_HEART_LEVELS = {Ram.AREA_STORE_DARK_FOREST: (Ram.STAGE_DARK_FOREST, 6),
-                      Ram.AREA_STORE_PETES_CASTLE: (Ram.STAGE_PETES_CASTLE, 5)}
+# Progressive Costumes option: item ID -> (Costume flag, Upgrade flag); 1 copy owns the Costume, 2 its Upgrade too
+PROGRESSIVE_ITEM: Dict[int, Tuple[int, int]] = {i: (e[1], e[2]) for i, e in ITEM_EFFECT.items() if e[0] == "progressive"}
+
+
+def progressive_flags(items: List[int], copies: int) -> Set[int]:
+    # The Costume flags (copies = 1) or the Upgrade flags (copies = 2) owned through progressive items.
+    return {flags[copies - 1] for item_id, flags in PROGRESSIVE_ITEM.items() if items.count(item_id) >= copies}
 
 
 def _index(kind: str) -> Dict[Tuple, int]:
@@ -69,15 +84,17 @@ REMATCH_IDS: Dict[Tuple[int, int], int] = _index("rematch")                     
 _ENTRY = _index("costume_entry")
 COSTUME_ENTRY_IDS: Dict[Tuple[int, int, int], int] = {                                       # (Stage, Level, Area)
     entry: _ENTRY[(entry[0],)] for entry in Ram.COSTUME_ENTRY_LEVELS.values()}
-STORE_HEART_IDS: Dict[int, int] = {key[0]: lid for key, lid in _index("store_heart").items()}  # Store Area -> ID
-UPGRADE_IDS: Dict[int, int] = {key[0]: lid for key, lid in _index("upgrade").items()}          # flag address -> ID
+_STORE = _index("store")                                                                       # (mask, Area) -> ID
+STORE_IDS: Dict[int, int] = {key[0]: lid for key, lid in _STORE.items()}                       # mask in $7FEE17 -> ID
+STORE_HEART_IDS: Dict[int, int] = {key[1]: lid for key, lid in _STORE.items() if key[1]}       # selling Store Area -> ID
+UPGRADE_IDS: Tuple[int, ...] = tuple(lid for key, lid in _STORE.items() if not key[1])         # sold in every Store
 
 
 def detectable_ids() -> Set[int]:
     # Every Location ID the Tracker can report (the test checks this is every Location of the world).
     ids: Set[int] = set(BOX_IDS.values()) | set(ODD_IDS.values()) | set(CLEAR_IDS.values()) | set(BOSS_IDS.values())
     ids |= set(MINI_BOSS_IDS.values()) | set(REMATCH_IDS.values()) | set(COSTUME_ENTRY_IDS.values())
-    ids |= set(STORE_HEART_IDS.values()) | set(UPGRADE_IDS.values())
+    ids |= set(STORE_IDS.values())
     return ids
 
 
@@ -140,6 +157,7 @@ class Memory:
 class TickResult(NamedTuple):
     locations: List[int]         # newly detected Location IDs (for anything I may have missed).
     goal: bool                   # Emperor Pete defeated.
+    levels: Optional[int] = None  # Levels played to save on the server ("or"), when RAM has bits the server lacks
     scout: Tuple[int, ...] = ()  # Store Locations to send as hints, once each per connection (so the player can know what is actually in the Store before purchasing a Location check).
 
 
@@ -148,6 +166,9 @@ class Tracker:
     def __init__(self, starting_max_health: int):
         self.starting_max_health = max(1, min(MAX_HEALTH_CAP, starting_max_health))
         self.store_hints = True
+        self.item_messages = "all"                                  # Messages.MODES
+        self.describe = None                                       # item index -> Messages.Message (set by the glue)
+        self.levels_saved: Optional[int] = None                    # the server's Levels played (None = not received yet)
         self.reset()
 
     def reset(self) -> None:
@@ -157,12 +178,11 @@ class Tracker:
         self.battle_context: Optional[Tuple[int, int]] = None      # (Stage, Level) seen during the boss battle.
         self.died_in_battle = False
         self.battle_quit_count: Optional[int] = None
-        self.prev_area: Optional[int] = None
         self.map_seen = False                                      # the World Map was seen since the last title/intro.
-        self.prev_big_heart_lock: Optional[int] = None
-        self.upgrade_forced: Dict[int, bool] = {flag: False for flag in UPGRADE_ITEM}
         self.warned_costumes: Set[int] = set()
         self.hinted: Set[int] = set()                              # Store Locations already sent as hints.
+        self.jingle_from: Optional[int] = None                     # first item index that may play a jingle
+        self.notices = Messages.MessageQueue()                     # in-game messages waiting to be shown
         self.messages: List[str] = []
 
     # ---- derived from the item history ----
@@ -171,7 +191,12 @@ class Tracker:
 
     @staticmethod
     def safe_to_write(mem: Memory) -> bool:
-        return mem.get(Ram.PAUSED) == 0 and mem.get(Ram.AREA) not in Ram.AREA_NO_WRITE
+        if mem.get(Ram.PAUSED) != 0:
+            return False
+        area = mem.get(Ram.AREA)
+        if area == Ram.AREA_TRANSIT_OR_5_1 and (mem.get(Ram.STAGE_INDEX), mem.get(Ram.LEVEL_INDEX)) == Ram.LEVEL_5_1:
+            return True
+        return area not in Ram.AREA_NO_WRITE
 
     # ---- one poll ----
     def tick(self, mem: Memory, items: List[int], known: Set[int]) -> TickResult:
@@ -181,28 +206,33 @@ class Tracker:
             # forget the edge detectors so they arm again on clean data.
             self.reset()
             return TickResult(new, False)
+        if self.jingle_from is None:
+            self.jingle_from = len(items)                          # what is already received at connect is silent
 
         def report(location_id: int) -> None:
             if location_id not in known and location_id not in new:
                 new.append(location_id)
 
         goal = self.detect_locations(mem, report)
-        self.upgrade_invariant(mem, items, known, report)
-        self.mirror_to_ap_ram(mem, items)
+        self.upgrade_invariant(mem, items)
+        self.mirror_to_ap_ram(mem, items, known)
+        self.tracker_counts(mem, items, known)
         self.max_health_invariant(mem, items)
+        levels = self.levels_played(mem)
         if self.safe_to_write(mem):
             self.costume_invariant(mem, items)
             self.dispatch(mem, items)
-        return TickResult(new, goal, self.store_hint_ids(mem, known))
+            self.show_notice(mem)
+        return TickResult(new, goal, levels, self.store_hint_ids(mem, known))
 
     def store_hint_ids(self, mem: Memory, known: Set[int]) -> Tuple[int, ...]:
-        # Inside a Store: the Locations to hint. The Upgrades are the same Location in every Store; the Big Heart only
-        # in its own Store (Dark Forest, Pete's Castle). Each is sent once per connection, and never when already
-        # checked. The server's own 'only new' rule keeps a repeat after a reconnect from making a duplicate hint.
+        # Inside a Store: the Locations to hint. The Upgrades are the same Location in every Store; the Big Heart only in its own Store (patched so every Store sells one).
+        # Each is sent once per connection, and never when already checked.
+        # The server's own 'only new' rule keeps a repeat after a reconnect from making a duplicate hint.
         area = mem.get(Ram.AREA)
         if not self.store_hints or area not in Ram.STORE_AREAS:
             return ()
-        wanted = list(UPGRADE_IDS.values())
+        wanted = list(UPGRADE_IDS)
         if area in STORE_HEART_IDS:
             wanted.append(STORE_HEART_IDS[area])
         fresh = tuple(i for i in wanted if i not in self.hinted and i not in known)
@@ -215,13 +245,17 @@ class Tracker:
         paused = mem.get(Ram.PAUSED)
 
         # ROM latches (patched)
-        # Treasure Boxes, Beaver Secret, 5-2 "speed runs".
+        # Treasure Boxes, Beaver Secret, 5-2 "speed runs", Store purchases.
         for bit, location_id in BOX_IDS.items():
             if mem.get(Ram.AP_BOX_LATCH + bit // 8) & (1 << (bit % 8)):
                 report(location_id)
         odd = mem.get(Ram.AP_ODD_LATCH)
         for mask, location_id in ODD_IDS.items():
             if odd & mask:
+                report(location_id)
+        store = mem.get(Ram.AP_STORE_LATCH)
+        for mask, location_id in STORE_IDS.items():
+            if store & mask:
                 report(location_id)
 
         # Stage Clear
@@ -244,14 +278,6 @@ class Tracker:
         entry = COSTUME_ENTRY_IDS.get((stage, level, area))
         if entry is not None and self.map_seen:
             report(entry)
-
-        # Store Big Hearts
-        # $02BD goes 0 -> 1 inside the Store (scopes the Level; only the purchase sets it since it's not touched otherwise)
-        lock = mem.get(Ram.BIG_HEART_LOCK)
-        if (area in STORE_HEART_LEVELS and (stage, level) == STORE_HEART_LEVELS[area]
-                and self.prev_area == area and self.prev_big_heart_lock == 0 and lock == 1):
-            report(STORE_HEART_IDS[area])
-        self.prev_area, self.prev_big_heart_lock = area, lock
 
         # Mini-bosses and Rematches: falling edge of $1D8D bit 0, unless Mickey died or quit during the battle.
         # The (Stage, Level) is the one seen DURING the battle, so a slow poll cannot read the next Level.
@@ -279,29 +305,12 @@ class Tracker:
         self.prev_boss_bit, self.prev_paused = boss_bit, paused
         return goal
 
-    # ---- Upgrade Store invariant (or what to do if the player got the Upgrade AP Item but hasn't checked the Upgrade AP Location) ----
-    def upgrade_invariant(self, mem: Memory, items: List[int], known: Set[int], report) -> None:
-        inside_store = mem.get(Ram.AREA) in Ram.STORE_AREAS
+    # ---- Upgrade invariant ----
+    # The effect flags follow the item history only. The Store no longer reads them from the Store latches, so there is nothing Store-specific left here.
+    def upgrade_invariant(self, mem: Memory, items: List[int]) -> None:
+        progressive = progressive_flags(items, 2)
         for flag, item_id in UPGRADE_ITEM.items():
-            owned = item_id in items
-            location_id = UPGRADE_IDS[flag]
-            current = mem.get(flag)
-            if location_id in known or not inside_store:
-                self.set_upgrade(mem, flag, 1 if owned else 0)
-                if not inside_store:
-                    self.upgrade_forced[flag] = False
-            elif owned:
-                # Owned, unchecked: the flag is forced to 0 so the Store sells it; the own forced 0 -> 1 is the purchase.
-                # The player has the Upgrade temporarily disabled inside a Store if they haven't checked the Location.
-                if self.upgrade_forced[flag] and current == 1:
-                    report(location_id)
-                else:
-                    self.set_upgrade(mem, flag, 0)
-                    self.upgrade_forced[flag] = True
-            elif current == 1:
-                # Not owned, unchecked: vanilla flipped the flag by itself, a purchase. Report it, suppress the effect.
-                report(location_id)
-                self.set_upgrade(mem, flag, 0)
+            self.set_upgrade(mem, flag, 1 if item_id in items or flag in progressive else 0)
 
     @staticmethod
     def set_upgrade(mem: Memory, flag: int, value: int) -> None:
@@ -311,7 +320,7 @@ class Tracker:
 
     # ---- invariants ----
     @staticmethod
-    def mirror_to_ap_ram(mem: Memory, items: List[int]) -> None:
+    def mirror_to_ap_ram(mem: Memory, items: List[int], known: Set[int]) -> None:
         fragments = 0
         for item_id in set(items):
             effect = ITEM_EFFECT.get(item_id)
@@ -319,6 +328,32 @@ class Tracker:
                 fragments |= 1 << effect[1]
         mem.set(Ram.AP_FRAGMENTS, fragments)
         mem.set(Ram.AP_EMBLEMS, min(255, items.count(EMBLEM_ID)))
+        # Checked Store Locations, so the Store shows them Sold Out even after a New Game or an older savestate. Only
+        # the client writes this byte; the ROM writes its own purchase latch ($7FEE17), so neither overwrites the other.
+        mem.set(Ram.AP_STORE_CHECKED, sum(mask for mask, location_id in STORE_IDS.items() if location_id in known))
+
+    def levels_played(self, mem: Memory) -> Optional[int]:
+        # RAM | server back into RAM (restores them after a New Game); returns the new total when the server lacks bits.
+        if self.levels_saved is None:
+            return None                                            # wait for the server's copy
+        ram = 0
+        for i in range(Ram.AP_LEVELS_PLAYED_SIZE):
+            ram |= mem.get(Ram.AP_LEVELS_PLAYED + i) << (8 * i)
+        merged = ram | self.levels_saved
+        if merged != ram:
+            for i in range(Ram.AP_LEVELS_PLAYED_SIZE):
+                mem.set(Ram.AP_LEVELS_PLAYED + i, (merged >> (8 * i)) & 0xFF)
+        if merged != self.levels_saved:
+            self.levels_saved = merged
+            return merged
+        return None
+
+    @staticmethod
+    def tracker_counts(mem: Memory, items: List[int], known: Set[int]) -> None:
+        # The in-game Tracker's numbers for the current Stage, every poll (paused too), from the server's checks.
+        block = TrackerData.tracker_bytes(mem.get(Ram.STAGE_INDEX), known, items.count(EMBLEM_ID))
+        for offset, value in enumerate(block):
+            mem.set(Ram.AP_TRACKER + offset, value)
 
     def max_health_invariant(self, mem: Memory, items: List[int]) -> None:
         # Purchasing a Store Big Heart doesn't grant the health increase.
@@ -332,6 +367,7 @@ class Tracker:
         # Game is patched to be able to receive Costumes in any order.
         # The vanilla game grant depends on owning the previous Costume for whatever reason, so it's always locked to W -> F -> M.
         owned_flags = {ITEM_EFFECT[i][1] for i in set(items) if ITEM_EFFECT.get(i, ("",))[0] == "costume"}
+        owned_flags |= progressive_flags(items, 1)
         for flag in owned_flags:
             mem.set(flag, 1)
         for flag in COSTUME_FLAGS:
@@ -343,13 +379,54 @@ class Tracker:
     def dispatch(self, mem: Memory, items: List[int]) -> int:
         index = mem.get16(Ram.AP_ITEM_INDEX)
         applied = 0
+        fresh: Set[str] = set()    
         while index < len(items) and applied < MAX_ITEMS_PER_POLL:
-            self.apply_one_shot(mem, items, ITEM_EFFECT.get(items[index]))
+            effect = ITEM_EFFECT.get(items[index])
+            self.apply_one_shot(mem, items, effect)
+            if self.jingle_from is not None and index >= self.jingle_from:
+                kind = effect[0] if effect else ""
+                if items[index] in FILLER_IDS:
+                    kind = ""                                  # Filler: message only, no jingle
+                if kind == "progressive":                      # the first copy is the Costume, the next its Upgrade
+                    kind = "costume" if items[:index + 1].count(items[index]) == 1 else "upgrade"
+                if kind:
+                    fresh.add(kind)
+                self.notice(self.describe(index) if self.describe else None)
             index += 1
             applied += 1
         if applied:
             mem.set16(Ram.AP_ITEM_INDEX, index)
+        if fresh:
+            # One jingle per poll. jingle_from only moves forward, so a replay of these Items stays silent.
+            self.jingle_from = index
+            mem.bump(Ram.AP_JINGLE_COSTUME_REQ if "costume" in fresh else Ram.AP_JINGLE_ITEM_REQ)
         return applied
+
+    # ---- in-game messages ----
+    def notice(self, message: Optional[Messages.Message]) -> None:
+        if message is not None and Messages.allowed(message, self.item_messages):
+            self.notices.push(message)
+
+    def show_notice(self, mem: Memory) -> None:
+        # The next message, when the ROM is idle and the screen is a Level, Store or Secret. Not on the World Map: its
+        # text rows show the Level Select; messages wait for the next Level.
+        area = mem.get(Ram.AREA)
+        if area > 0x30 or area == 0x25 or area == Ram.AREA_MAP:
+            return
+        if mem.get(Ram.AP_MSG_PHASE) or mem.get(Ram.AP_MSG_REQ) != mem.get(Ram.AP_MSG_SHOWN):
+            return
+        while True:
+            message = self.notices.next()
+            if message is None:
+                return
+            if Messages.allowed(message, self.item_messages):    # the mode may have changed since it was queued
+                break
+        for offset, tile in enumerate(Messages.line_tiles(message.line1)):
+            mem.set(Ram.AP_MSG_LINE1 + offset, tile)
+        for offset, tile in enumerate(Messages.line_tiles(message.line2)):
+            mem.set(Ram.AP_MSG_LINE2 + offset, tile)
+        mem.set(Ram.AP_MSG_COLOR, message.attr)
+        mem.bump(Ram.AP_MSG_REQ)                                   # the highest address: written after the text
 
     def apply_one_shot(self, mem: Memory, items: List[int], effect: Optional[Tuple]) -> None:
         if not effect:
@@ -377,10 +454,41 @@ class Tracker:
             mem.set(Ram.MAX_HEALTH, true_max)
             mem.set(Ram.HEALTH, true_max)
             mem.bump(Ram.HUD_HEALTH)
-        # costume / map_fragment / emblem / upgrade: stateless, handled by the invariants
+        # costume / progressive / map_fragment / emblem / upgrade: stateless, handled by the invariants
 
 
 # ---- SNI glue ---------------------------------------------------------------------------------------------------
+def default_item_messages() -> str:
+    # host.yaml: magical_quest_options.item_messages (all / received / off), "all" if missing or unreadable.
+    try:
+        from settings import get_settings
+        value = str(get_settings().magical_quest_options.item_messages).strip().lower()
+    except Exception:
+        value = "all"
+    return value if value in Messages.MODES else "all"
+
+
+def cmd_item_messages(self, mode: str = "") -> bool:
+    """In-game item messages: all (received, found, sent), received (no sent) or off. No value: show the setting."""
+    handler = getattr(self.ctx, "client_handler", None)
+    if not isinstance(handler, MagicalQuestSNIClient):
+        self.output("Magical Quest is not running.")
+        return False
+    mode = mode.strip().lower()
+    if mode:
+        if mode not in Messages.MODES:
+            self.output(f"Use one of: {', '.join(Messages.MODES)}.")
+            return False
+        handler.item_messages = mode
+    self.output(f"Item messages: {handler.messages_mode()} (this session; the default is in host.yaml).")
+    return True
+
+
+def levels_key(ctx) -> str:
+    # The server's data storage key for this slot's Levels played (Level Select).
+    return f"magical_quest_levels_{getattr(ctx, 'team', 0)}_{ctx.slot}"
+
+
 class MagicalQuestSNIClient(SNIClient):
     game = GAME_NAME
     patch_suffix = ".apmq"
@@ -390,6 +498,8 @@ class MagicalQuestSNIClient(SNIClient):
         self.items_synced = False
         self.slot_data: Optional[dict] = None
         self.slot_data_checked = False
+        self.item_messages: Optional[str] = None    # read from host.yaml on the first poll (Messages.MODES)
+        self.levels_requested = False               # Get + SetNotify sent for the Levels played key
 
     async def validate_rom(self, ctx) -> bool:
         from SNIClient import snes_read
@@ -404,10 +514,14 @@ class MagicalQuestSNIClient(SNIClient):
         ctx.game = self.game
         ctx.items_handling = 0b111 # remote items: the server sends everything, the dispatcher applies it
         ctx.allow_collect = True
+        processor = getattr(ctx, "command_processor", None)
+        if processor is not None and "item_messages" not in processor.commands:
+            processor.commands["item_messages"] = cmd_item_messages
 
         if ctx.rom != identity:
             health = await snes_read(ctx, Ram.ROM_START + RomData.MAX_HEALTH_TABLE_OFFSET, 1)
             self.tracker = Tracker(health[0] if health else 3)
+            self.levels_requested = False
             self.items_synced = False
             self.slot_data_checked = False
         ctx.rom = identity
@@ -419,9 +533,49 @@ class MagicalQuestSNIClient(SNIClient):
             self.slot_data = args.get("slot_data")
             self.slot_data_checked = False
             self.items_synced = False
+            self.levels_requested = False
+            self.tracker.levels_saved = None
             self.tracker.reset()
         elif cmd == "ReceivedItems":
             self.items_synced = True
+        elif cmd == "Retrieved":
+            keys = args.get("keys", {})
+            if levels_key(ctx) in keys:
+                self.saved_levels(keys[levels_key(ctx)])
+        elif cmd == "SetReply" and args.get("key") == levels_key(ctx):
+            self.saved_levels(args.get("value"))
+        elif cmd == "PrintJSON" and args.get("type") == "ItemSend" and ctx.slot is not None:
+            self.tracker.item_messages = self.messages_mode()
+            self.tracker.notice(self.describe_sent(ctx, args))
+
+    def saved_levels(self, value) -> None:
+        # The server's value (None when the key was never set) joins what is already known: bits are only added.
+        self.tracker.levels_saved = (self.tracker.levels_saved or 0) | (value if isinstance(value, int) else 0)
+
+    def messages_mode(self) -> str:
+        if self.item_messages is None:
+            self.item_messages = default_item_messages()
+        return self.item_messages
+
+    @staticmethod
+    def describe_sent(ctx, args: dict) -> Optional[Messages.Message]:
+        # An Item this slot found for another slot (own Items arrive as received Items instead).
+        item, receiving = args.get("item"), args.get("receiving")
+        if item is None or item.player != ctx.slot or receiving == ctx.slot:
+            return None
+        name = ctx.item_names.lookup_in_slot(item.item, receiving)
+        return Messages.sent(name, ctx.player_names.get(receiving, f"Player {receiving}"), item.flags)
+
+    @staticmethod
+    def describe_received(ctx, index: int) -> Optional[Messages.Message]:
+        if index >= len(ctx.items_received):
+            return None
+        network_item = ctx.items_received[index]
+        name = ctx.item_names.lookup_in_game(network_item.item)
+        if network_item.player == ctx.slot:
+            return Messages.found(name, network_item.flags)
+        sender = ctx.player_names.get(network_item.player, "Archipelago")
+        return Messages.received(name, sender, network_item.flags)
 
     def check_slot_data(self) -> None:
         # The ROM is the truth; the server's slot data is only compared, so a wrong patch or version is visible.
@@ -448,8 +602,14 @@ class MagicalQuestSNIClient(SNIClient):
             return
         if not self.slot_data_checked:
             self.check_slot_data()
+        if not self.levels_requested:
+            self.levels_requested = True
+            await ctx.send_msgs([{"cmd": "Get", "keys": [levels_key(ctx)]},
+                                 {"cmd": "SetNotify", "keys": [levels_key(ctx)]}])
 
         self.tracker.store_hints = bool((self.slot_data or {}).get("store_hints", True))
+        self.tracker.item_messages = self.messages_mode()
+        self.tracker.describe = lambda index: self.describe_received(ctx, index)
         memory = Memory(block, boss[0], ap_block)
         items = [network_item.item for network_item in ctx.items_received]
         known = set(ctx.locations_checked) | set(ctx.checked_locations)
@@ -470,6 +630,9 @@ class MagicalQuestSNIClient(SNIClient):
                              f"({len(ctx.locations_checked)}/{len(ctx.missing_locations) + len(ctx.checked_locations)})")
         if result.locations:
             await ctx.send_msgs([{"cmd": "LocationChecks", "locations": result.locations}])
+        if result.levels is not None:
+            await ctx.send_msgs([{"cmd": "Set", "key": levels_key(ctx), "default": 0, "want_reply": False,
+                                  "operations": [{"operation": "or", "value": result.levels}]}])
         if result.scout:
             # create_as_hint 2: the server makes a hint only if it is new, and it shows for everyone (any game's item)
             await ctx.send_msgs([{"cmd": "LocationScouts", "locations": list(result.scout), "create_as_hint": 2}])
@@ -479,3 +642,14 @@ class MagicalQuestSNIClient(SNIClient):
             await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL},
                                  {"cmd": "Say", "text": GOAL_TEXT}]) # the Say shows the flavor text in the server log
             ctx.finished_game = True
+
+
+
+
+
+
+
+
+
+
+            

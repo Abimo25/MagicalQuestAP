@@ -3,7 +3,8 @@
 # ================
 # The ROM is a premade patch (bsdiff4) of my own dump.
 # There's a small token file with what changes per seed:
-# the starting Stage, the starting Max Health, the header title and the identity block.
+# the starting Stage, the starting Max Health, the header title, the identity block and the item classes shown by the
+# Treasure Box drops and the Store Locations.
 # Last comes the SNES checksum, which the header edit invalidates.
 # The patch container is an Archipelago procedure patch (.apmq): "apply_bsdiff4" on the base dump, "apply_tokens", "apply_checksum".
 
@@ -19,6 +20,7 @@ import Utils
 from worlds.Files import APPatchExtension, APProcedurePatch, APTokenMixin, APTokenTypes
 
 from . import RomData
+from .data import locations_data
 from .names import GAME_NAME, WORLD_VERSION
 
 if TYPE_CHECKING:
@@ -82,7 +84,12 @@ class MagicalQuestSettings(settings.Group):
         def validate(cls, path: str) -> None:
             read_base_rom(path)                               # raises ValueError on a wrong dump
 
+    class ItemMessages(str):
+        """In-game messages for Archipelago items: all (received, found and sent), received (no sent) or off.
+        The client command /item_messages changes it for one session."""
+
     rom_file: RomFile = RomFile(RomFile.copy_to)
+    item_messages: ItemMessages = ItemMessages("all")
 
 
 # ---- Patch container and steps -----------------------------------------------------------------------
@@ -133,25 +140,66 @@ def identity_bytes(slot_name: str, seed_name: str) -> bytes:
     return (padded(slot_name, RomData.SLOT_NAME_LENGTH, b"\x00") + padded(seed_name, RomData.SEED_NAME_LENGTH, b"\x00"))
 
 
+def item_class(item) -> int:
+    # The icon a Treasure Box shows for this item: Progression (also progression + useful), Useful, or Filler
+    # (filler and traps).
+    if item.advancement:
+        return RomData.BOX_CLASS_PROGRESSION
+    if item.useful:
+        return RomData.BOX_CLASS_USEFUL
+    return RomData.BOX_CLASS_FILLER
+
+
+def box_classes(world: MagicalQuestWorld) -> bytes:
+    # One class byte per box number, from the item placed at each Treasure Box Location.
+    classes = bytearray(RomData.BOX_CLASS_COUNT)
+    placed = {location.name: location.item for location in world.multiworld.get_locations(world.player)}
+    for data in locations_data.LOCATIONS:
+        if data.detect[0] != "box":
+            continue
+        item = placed.get(data.name)
+        if item is not None:
+            classes[data.detect[1]] = item_class(item)
+    return bytes(classes)
+
+
+def store_classes(world: MagicalQuestWorld) -> bytes:
+    # One class byte per Store latch bit, from the item placed at each Store Location.
+    classes = bytearray(RomData.STORE_CLASS_COUNT)
+    placed = {location.name: location.item for location in world.multiworld.get_locations(world.player)}
+    for data in locations_data.LOCATIONS:
+        if data.detect[0] != "store":
+            continue
+        item = placed.get(data.name)
+        if item is not None:
+            classes[data.detect[1].bit_length() - 1] = item_class(item)
+    return bytes(classes)
+
+
 def write_seed_tokens(patch: MagicalQuestProcedurePatch, starting_stage: int, starting_max_health: int,
-                      slot_name: str, seed_name: str) -> None:
+                      slot_name: str, seed_name: str, classes: bytes = bytes(RomData.BOX_CLASS_COUNT),
+                      store: bytes = bytes(RomData.STORE_CLASS_COUNT), skater_reduced_hp: bool = False) -> None:
     # This is everything a seed changes, as WRITE tokens (offsets in RomData).
+    assert len(classes) == RomData.BOX_CLASS_COUNT and len(store) == RomData.STORE_CLASS_COUNT
     patch.write_byte(RomData.CONFIG_START_STAGE_OFFSET, starting_stage)
+    patch.write_byte(RomData.CONFIG_SKATER_HP_OFFSET, 1 if skater_reduced_hp else 0)
     patch.write_bytes(RomData.CONFIG_ENTRY_LEVEL_OFFSET, RomData.CONFIG_ENTRY_LEVELS_DEFAULT)
     patch.write_bytes(RomData.MAX_HEALTH_TABLE_OFFSET, bytes([starting_max_health]) * RomData.MAX_HEALTH_TABLE_LENGTH)
     patch.write_bytes(RomData.HEADER_TITLE_OFFSET,
                       padded(f"MQAP {WORLD_VERSION}", RomData.HEADER_TITLE_LENGTH, b" "))
     patch.write_bytes(RomData.IDENTITY_BASE, identity_bytes(slot_name, seed_name))
+    patch.write_bytes(RomData.BOX_CLASS_OFFSET, classes)
+    patch.write_bytes(RomData.STORE_CLASS_OFFSET, store)
 
 
 def patch_rom(world: MagicalQuestWorld, patch: MagicalQuestProcedurePatch) -> None:
     base_patch = pkgutil.get_data(__name__, BASE_PATCH_RESOURCE)
     if base_patch is None:
-        raise FileNotFoundError(f"{BASE_PATCH_RESOURCE} is missing from the world: build it from the patched ROM "
-                                f"(Part 3, ROM patch pipeline).")
+        raise FileNotFoundError(f"{BASE_PATCH_RESOURCE} is missing from the world: build it from the patched ROM ")
     patch.write_file(BASE_PATCH_FILE, base_patch)
     write_seed_tokens(patch, world.starting_stage_index, world.options.starting_max_health.value,
-                      world.player_name, str(world.multiworld.seed_name))
+                      world.player_name, str(world.multiworld.seed_name), box_classes(world), store_classes(world),
+                      skater_reduced_hp=not world.options.skater_requires_costume)
     patch.write_file(TOKEN_FILE, patch.get_token_binary())
 
 

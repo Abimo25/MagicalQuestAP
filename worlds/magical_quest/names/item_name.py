@@ -8,6 +8,9 @@
 wizard_costume = "Wizard Costume"
 firefighter_costume = "Firefighter Costume"
 mountaineer_costume = "Mountaineer Costume"
+# Progressive Costumes option: two copies each; the first is the Costume, the second its Upgrade (Magic / Water)
+progressive_wizard = "Progressive Wizard"
+progressive_firefighter = "Progressive Firefighter"
 
 # Progression: Map Fragments, one per Stage (AP RAM $7FEE00, bit n = Stage Index n)
 treetops_map_fragment = "Treetops Map Fragment"
@@ -17,10 +20,10 @@ petes_peak_map_fragment = "Pete's Peak Map Fragment"
 snowy_valley_map_fragment = "Snowy Valley Map Fragment"
 petes_castle_map_fragment = "Pete's Castle Map Fragment"
 
-# Progression: exactly one copy in the pool; allows the player to buy any one Item Location without having to grind coins.
+# Progression: two copies in the pool; logic asks for one before any Store Location, so the player never has to grind coins when many important items happen to be in the Stores.
 coins_300 = "300 Mickey Coins"
 
-# Progression: 5 guaranteed, one per main Stage Boss (AP RAM $7FEE0D counts the received ones)
+# Progression: 5 guaranteed, one per main Stage Boss.
 petes_emblem = "Pete's Emblem"
 
 # Useful

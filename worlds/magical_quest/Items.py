@@ -57,14 +57,21 @@ def create_all_items(world: MagicalQuestWorld) -> None:
     # Costumes as well); generate_early decides all of these."""
     pool: List[Item] = []
     elsewhere = set(world.precollected_fragments) | set(world.locked_items.values())     # Game Mode
+    progressive = bool(world.options.progressive_costumes)
+    locked = list(world.locked_items.values())
     for name in (I.wizard_costume, I.firefighter_costume, I.mountaineer_costume):
-        if name not in elsewhere:
+        if progressive and name in data.PROGRESSIVE:
+            item = data.PROGRESSIVE[name]                  # two copies: the Costume, then its Upgrade
+            pool += [world.create_item(item) for _ in range(2 - locked.count(item))]
+        elif name not in elsewhere:
             pool.append(world.create_item(name))
     for name in I.map_fragments:
         if name not in elsewhere:
             pool.append(world.create_item(name))
-    for name in data.SINGLE_COPY:                     # 300 Mickey Coins, Magic Upgrade, Water Upgrade
-        pool.append(world.create_item(name))
+    pool += [world.create_item(I.coins_300) for _ in range(data.COINS_300_COPIES)]   # Progression, twice
+    for name in data.SINGLE_COPY:                     # Magic Upgrade, Water Upgrade (inside the progressive items when on)
+        if not progressive:
+            pool.append(world.create_item(name))
     for name in data.TWO_COPIES:                      # 200 Mickey Coins (Useful), twice
         pool += [world.create_item(name), world.create_item(name)]
     for _ in range(10 - world.options.starting_max_health.value):
@@ -73,3 +80,5 @@ def create_all_items(world: MagicalQuestWorld) -> None:
     free_locations = len(world.multiworld.get_unfilled_locations(world.player))
     pool += [world.create_filler() for _ in range(free_locations - len(pool))]
     world.multiworld.itempool += pool
+
+    

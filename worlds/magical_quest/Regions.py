@@ -30,9 +30,12 @@ def create_and_connect_regions(world: MagicalQuestWorld) -> None:
 
     for stage, levels in gates.STAGE_LEVELS.items():
         connect(R.menu, stage)                        # rule: the Stage's Map Fragment
-        connect(stage, levels[0])                     # every visit starts at 1-1, no rule
+        connect(stage, levels[0])                     # every first visit starts at 1-1, no rule
     for source, target, _ in gates.LEVEL_EXITS:
         connect(source, target)
     for level, store, _ in gates.STORE_DOORS:
         connect(level, store)
         connect(store, R.general_store)
+
+
+        

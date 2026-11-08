@@ -2,8 +2,8 @@
 # = Location Names =
 # ==================
 # The strings are what the AP Server and the AP Client show.
-# 63 Locations on every difficulty: 37 Treasure Boxes + 5 Stage Clears + 5 Stage Bosses + 3 Mini-bosses +
-# 3 Rematches + 3 stage-entry Costumes + 4 store purchases + Beaver Secret + 2 Snowy Valley 5-2 "speed runs".
+# 66 Locations on every difficulty: 37 Treasure Boxes + 5 Stage Clears + 5 Stage Bosses + 3 Mini-bosses +
+# 3 Rematches + 3 stage-entry Costumes + 7 store purchases (5 Big Hearts, 2 Upgrades) + Beaver Secret + 2 Snowy Valley 5-2 "speed runs".
 # Emperor Pete's defeat is the goal.
 
 # Treasure Boxes (37).
@@ -73,7 +73,10 @@ fire_grotto_costume_firefighter = "Fire Grotto — Costume (Firefighter)" # This
 pete_s_peak_costume_mountaineer = "Pete's Peak — Costume (Mountaineer)"
 
 # Store purchases (4)
+treetops_store_big_heart = "Treetops (General Store) — Big Heart"
 dark_forest_store_big_heart = "Dark Forest (General Store) — Big Heart"
+fire_grotto_store_big_heart = "Fire Grotto (General Store) — Big Heart"
+pete_s_peak_store_big_heart = "Pete's Peak (General Store) — Big Heart"
 petes_castle_store_big_heart = "Pete's Castle (General Store) — Big Heart"
 store_magic_upgrade = "General Store — Magic Upgrade"
 store_water_upgrade = "General Store — Water Upgrade"

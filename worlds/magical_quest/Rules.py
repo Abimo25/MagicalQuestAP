@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 _TOKEN = re.compile(r"\s*([A-Z]+|[()&|])")
 
 
-def parse_rule(expression: str) -> Optional[Rule]:
+def parse_rule(expression: str, items: Optional[dict] = None) -> Optional[Rule]:
     # Rule for an expression of W, F, M, COINS, EMBLEMS, &, | and parentheses ('&' binds tighter). "" gives None (no requirement).
     tokens: List[str] = []
     position = 0
@@ -67,10 +67,11 @@ def parse_rule(expression: str) -> Optional[Rule]:
                 raise ValueError(f"missing ')' in rule {expression!r}")
             take()
             return rule
-        if token not in gates.TOKENS:
+        names = items or gates.TOKENS
+        if token not in names:
             raise ValueError(f"unknown token {token!r} in rule {expression!r}")
         count = gates.EMBLEMS_REQUIRED if token == "EMBLEMS" else 1
-        return Has(gates.TOKENS[token], count=count)
+        return Has(names[token], count=count)
 
     rule = or_expression()
     if index != len(tokens):
@@ -78,8 +79,15 @@ def parse_rule(expression: str) -> Optional[Rule]:
     return rule
 
 
+def rule_tokens(world: MagicalQuestWorld) -> dict:
+    # W and F are the first copy of the progressive items when Progressive Costumes is on.
+    if not world.options.progressive_costumes:
+        return gates.TOKENS
+    return {**gates.TOKENS, "W": I.progressive_wizard, "F": I.progressive_firefighter}
+
+
 def _set(world: MagicalQuestWorld, spot, expression: str) -> None:
-    rule = parse_rule(expression)
+    rule = parse_rule(expression, rule_tokens(world))
     if rule is not None:
         world.set_rule(spot, rule)
 
@@ -100,8 +108,12 @@ def set_entrance_rules(world: MagicalQuestWorld) -> None:
 
 
 def set_location_rules(world: MagicalQuestWorld) -> None:
+    skater_needs_costume = bool(world.options.skater_requires_costume)
     for loc in locations.LOCATIONS:
-        _set(world, world.get_location(loc.name), loc.rule)
+        rule = loc.rule
+        if loc.name in locations.SKATER_LOCATIONS and not skater_needs_costume:
+            rule = ""                                  # the ROM lowers the Skater's HP instead
+        _set(world, world.get_location(loc.name), rule)
     _set(world, world.get_location(L.emperor_pete_event), locations.EVENT_RULE)
 
 

@@ -14,15 +14,17 @@ def wram(cpu_address: int) -> int:
     return WRAM_START + (cpu_address & 0x1FFFF)
 
 
-# ---- Custom AP RAM block: 32 bytes at $7FEE00, zeroed at every New Game by a ROM patch ----------
+# ---- Custom AP RAM block: $7FEE00-$7FEEFF, zeroed at every New Game by a ROM patch (NewGame 1.5.0) ----------
 AP_BLOCK = 0x7FEE00
-AP_BLOCK_SIZE = 32
+AP_BLOCK_SIZE = 0xE7           # what the client reads each poll ($7FEE00-$7FEEE6)
 
 AP_FRAGMENTS = 0x7FEE00        # bit n = Map Fragment for Stage Index n (written by the client)
 AP_GOAL = 0x7FEE01             # main bosses defeated (reserved; not in use yet)
 AP_ITEM_INDEX = 0x7FEE02       # received-item index, 16 bits little endian ($7FEE02-$7FEE03)
 # $7FEE04-$7FEE0C belong to the ROM patches; the client never touches them.
 AP_EMBLEMS = 0x7FEE0D          # Pete's Emblem count, written by the client (The patched ROM reads it)
+AP_JINGLE_ITEM_DONE = 0x7FEE0E     # general jingle played (ROM only; the client never writes it)
+AP_JINGLE_COSTUME_DONE = 0x7FEE0F  # Costume jingle played (ROM only)
 AP_MAGIC = 0x7FEE1C            # $7FEE1C-$7FEE1F = "MQOK" once the ROM has cleared the block at the title
 AP_MAGIC_VALUE = b"MQOK"
 # Bank $7F is not cleared at boot: until the marker is there the whole AP block is power-on garbage and is ignored.
@@ -36,7 +38,35 @@ AP_ODD_LATCH = 0x7FEE15 # bit 0 = Beaver Secret, bit 1 = Snowy Valley speed run 
 ODD_BEAVER_BIT = 0x01
 ODD_SPEEDRUN_15_BIT = 0x02
 ODD_SPEEDRUN_25_BIT = 0x04
-# $7FEE16-$7FEE1F free
+AP_STORE_LATCH = 0x7FEE17 # Store purchases: bit 0 Dark Forest Big Heart, bit 1 Pete's Castle Big Heart,
+                          # bits 4-6 Treetops, Fire Grotto, Pete's Peak Big Heart (after 0.2.0),
+                          # bit 2 Magic Upgrade, bit 3 Water Upgrade. Written by the ROM only.
+AP_STORE_CHECKED = 0x7FEE18 # Same bits, written by the client only: Store Locations already checked. The ROM shows a slot
+                            # as Sold Out when its bit is set in either byte (two bytes, so the two writers never race).
+AP_JINGLE_ITEM_REQ = 0x7FEE19     # general "got an item" jingle requests: the client increments it (ROM reads only)
+AP_JINGLE_COSTUME_REQ = 0x7FEE1A  # Costume jingle requests: the client increments it (ROM reads only)
+# $7FEE1B free
+
+# ---- In-game messages (0.2.0) ---------------------------------------------------------------
+AP_MSG_LINE1 = 0x7FEE20        # 60 tiles, $FF ends a shorter line (client)
+AP_MSG_LINE2 = 0x7FEE5C        # 60 tiles (client)
+AP_MSG_COLOR = 0x7FEE98        # tile attribute in a Level (client); the World Map always uses $38
+AP_MSG_REQ = 0x7FEE99          # request counter (client), written last so it arrives after the text
+AP_MSG_SHOWN = 0x7FEE9A        # copy of the request counter once drawn (ROM)
+AP_MSG_PHASE = 0x7FEE9C        # 0 idle, 1-3 a message is up (ROM)
+ATTR_PROGRESSION = 0x2C        # light blue, the "PAUSE" colour
+ATTR_USEFUL = 0x20             # white-yellow
+ATTR_FILLER = 0x30             # dark grey
+ATTR_TRAP = 0x24               # yellow / red (traps from other games)
+
+# ---- In-game Tracker (0.2.0): the current Stage's counts, written by the client every poll ----------
+AP_TRACKER = 0x7FEEB0          # 25 bytes, layout in TrackerData.py
+# Level Select: $7FEEE0 + Stage Index = Levels played (bit n = Level Index n). The ROM sets
+# bits as the player plays; the client ORs them with the copy saved on the server (data storage) and writes the result
+# back, so they survive an emulator restart. $7FEEE7-$7FEEEE is the ROM's own L/R and "X-Y" state (not read).
+# (there was a bug that used $7FEED0, which is the Tracker's scratch: its counters showed up as Levels played. Bug was fixed)
+AP_LEVELS_PLAYED = 0x7FEEE0
+AP_LEVELS_PLAYED_SIZE = 7
 
 # ---- Vanilla WRAM: where we are -----------------------------------------------------------------
 DIFFICULTY = 0x7E0018          # 0 Easy, 1 Normal, 3 Hard (Not used, set by the game)
@@ -52,11 +82,11 @@ TIMER = 0x7E035D               # 3 decimal digits $035D-$035F (5-2 starts at 300
 MAX_HEALTH = 0x7E02B0
 HEALTH = 0x7E02B1
 ACTIVE_COSTUME = 0x7E02B3      # 0 Normal, 1 Wizard, 2 Firefighter, 3 Mountaineer
-WIZARD_UPGRADE = 0x7E02B5      # also the Store Sold-Out flag (needs to be temporarily set to 0 if visiting a Store while owning the AP Item without having checked the AP Location)
-FIREFIGHTER_UPGRADE = 0x7E02B6 # also the Store Sold-Out flag (see above)
+WIZARD_UPGRADE = 0x7E02B5      # the effect flag; vanilla also used it for Sold Out, patch uses the Store latches instead
+FIREFIGHTER_UPGRADE = 0x7E02B6 # (see above)
 MAGIC = 0x7E02B7
 WATER = 0x7E02B9
-BIG_HEART_LOCK = 0x7E02BD      # Level-scoped lock; the store Big Heart Locations key off its 0 -> 1 edge. The vanilla game always sets this to 1 when obtaining a Big Heart.
+BIG_HEART_LOCK = 0x7E02BD      # Level-scoped lock, set to 1 when a Big Heart is obtained (Treasure Box drop guard). Never written by the client.
 COINS_HUNDREDS = 0x7E02A8      # three decimal digits $02A8-$02AA (hundreds, tens, ones)
 COINS_TENS = 0x7E02A9
 COINS_ONES = 0x7E02AA
@@ -88,7 +118,11 @@ AREA_MAP = 0x24                # the World Map
 AREA_INTRO = 0x35              # Stage intro cutscene (also what a New Game's first Stage shows before its first map)
 AREA_TITLE = 0x40              # Title screen
 # Intermediate Areas during which the dispatcher must not write
-AREA_NO_WRITE = (0x34, 0x39, 0x10, 0x24, 0x41)
+AREA_NO_WRITE = (0x34, 0x39, 0x10, 0x41)   # the World Map ($24) was removed: items are delivered there too
+# $10 is also Snowy Valley 5-1 (Stage 4, Level 0). The transition phase only follows a Results screen, so its Level
+# Index is never 0 in Stage 4; 5-1 itself is safe.
+AREA_TRANSIT_OR_5_1 = 0x10
+LEVEL_5_1 = (4, 0)
 
 AREA_STORE_PETES_PEAK = 44     # Store 04
 AREA_STORE_TREETOPS = 45       # Store 01

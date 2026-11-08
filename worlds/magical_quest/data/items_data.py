@@ -33,6 +33,9 @@ ITEMS = [
     ItemData(I.wizard_costume, 0, PROGRESSION, (G_COSTUMES,), ("costume", 0x7E02C1)),
     ItemData(I.firefighter_costume, 1, PROGRESSION, (G_COSTUMES,), ("costume", 0x7E02C2)),
     ItemData(I.mountaineer_costume, 2, PROGRESSION, (G_COSTUMES,), ("costume", 0x7E02C3)),
+    # Progressive Costumes option: ("progressive", costume flag, Upgrade flag); 1 copy = the Costume, 2 = its Upgrade too
+    ItemData(I.progressive_wizard, 3, PROGRESSION, (G_COSTUMES,), ("progressive", 0x7E02C1, 0x7E02B5)),
+    ItemData(I.progressive_firefighter, 4, PROGRESSION, (G_COSTUMES,), ("progressive", 0x7E02C2, 0x7E02B6)),
     # Map Fragments: bit n of AP RAM $7FEE00 = Stage Index n (Pete's Castle is Stage Index 6)
     ItemData(I.treetops_map_fragment, 10, PROGRESSION, (G_MAP_FRAGMENTS,), ("map_fragment", STAGE_TREETOPS)),
     ItemData(I.dark_forest_map_fragment, 11, PROGRESSION, (G_MAP_FRAGMENTS,), ("map_fragment", STAGE_DARK_FOREST)),
@@ -40,7 +43,7 @@ ITEMS = [
     ItemData(I.petes_peak_map_fragment, 13, PROGRESSION, (G_MAP_FRAGMENTS,), ("map_fragment", STAGE_PETES_PEAK)),
     ItemData(I.snowy_valley_map_fragment, 14, PROGRESSION, (G_MAP_FRAGMENTS,), ("map_fragment", STAGE_SNOWY_VALLEY)),
     ItemData(I.petes_castle_map_fragment, 15, PROGRESSION, (G_MAP_FRAGMENTS,), ("map_fragment", STAGE_PETES_CASTLE)),
-    # Mickey Coins: add the amount to $02A8-$02AA with carry, clamp at 999. Only the 300 is progression (one copy).
+    # Mickey Coins: add the amount to $02A8-$02AA with carry, clamp at 999. Only the 300 is progression.
     ItemData(I.coins_300, 20, PROGRESSION, (G_COINS,), ("coins", 300)),
     ItemData(I.coins_100, 21, FILLER, (G_COINS,), ("coins", 100)),
     ItemData(I.coins_50, 22, FILLER, (G_COINS,), ("coins", 50)),
@@ -68,8 +71,12 @@ ITEM_BY_NAME = {item.name: item for item in ITEMS}
 # Pool rules that do not depend on options (counts that do, such as Big Hearts, are computed in __init__.py)
 MAP_FRAGMENT_COUNT = 6
 EMBLEM_COUNT = 5                   # one per main Stage Boss, locked on those five Locations
-SINGLE_COPY = (I.coins_300, I.magic_upgrade, I.water_upgrade)
+SINGLE_COPY = (I.magic_upgrade, I.water_upgrade)
 TWO_COPIES = (I.coins_200,)         # Useful: two copies of 200 Mickey Coins
+# Progressive Costumes option: these items become two copies of a progressive item
+PROGRESSIVE = {I.wizard_costume: I.progressive_wizard, I.magic_upgrade: I.progressive_wizard,
+               I.firefighter_costume: I.progressive_firefighter, I.water_upgrade: I.progressive_firefighter}
+COINS_300_COPIES = 2               # 300 Mickey Coins (Progression): logic needs one; the other is just to prevent grinding when many Store Locations hold important items
 FILLER_ITEMS = [item.name for item in ITEMS if item.classification == FILLER]
 
 # Filler weights (relative; equal for simplicity, but increasing coin weight is a possibility)
