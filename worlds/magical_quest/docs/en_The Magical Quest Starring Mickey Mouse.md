@@ -17,7 +17,7 @@ Every time you defeat a Stage Boss, you will receive a "Pete's Emblem" Item. Col
 
 66 Locations:
 
-- 37 Treasure Boxes (all boxes now drop apples and send an AP Item when you open them).
+- 37 Treasure Boxes (all boxes now drop a generic AP Item and send the AP Location when you grab it).
 - 5 Stage Clears and the 5 Stage Bosses.
 - 3 Mini-bosses and their 3 Rematches.
 - When you enter a Stage where you would receive a Costume, you get a Location check instead (3 Locations).
